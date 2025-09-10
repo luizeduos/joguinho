@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arena Shooter Multiplayer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap');
+
+        body {
+            font-family: 'Roboto', sans-serif;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            color: #f0f0f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        canvas {
+            background-color: #2a2a2a;
+            border: 2px solid #444;
+            border-radius: 8px;
+            cursor: crosshair;
+        }
+
+        .ui-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            right: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+
+        .info-box {
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            max-width: 400px;
+        }
+
+        .info-box h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            color: #00aaff;
+        }
+
+        .info-box p {
+            margin: 5px 0;
+        }
+
+        #health-bar-container {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 300px;
+            height: 25px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 3px;
+        }
+
+        #health-bar {
+            width: 100%;
+            height: 100%;
+            background-color: #22c55e;
+            /* green-500 */
+            border-radius: 5px;
+            transition: width 0.3s ease;
+        }
+
+        #message-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 2rem;
+            text-align: center;
+            z-index: 10;
+        }
+    </style>
+</head>
+
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="message-overlay" class="hidden">
+        <p id="message-text">Você morreu!</p>
+        <p id="respawn-timer" class="text-xl mt-4"></p>
+    </div>
+
+    <div class="ui-container">
+        <div class="info-box">
+            <h2 class="font-bold">Arena Shooter</h2>
+            <p><strong>Game ID:</strong> <span id="gameId">Carregando...</span></p>
+            <p class="text-xs mt-2">Copie e envie este link para seus amigos:</p>
+            <input type="text" id="shareableLink" readonly value="Gerando link..."
+                class="w-full bg-gray-700 border-gray-600 text-gray-300 p-1 rounded mt-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                onclick="this.select()">
+        </div>
+        <div class="info-box text-right">
+            <h2 class="font-bold">Jogadores</h2>
+            <ul id="player-list"></ul>
+        </div>
+    </div>
+
+    <div id="health-bar-container">
+        <div id="health-bar"></div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, deleteDoc, serverTimestamp, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Variáveis de Configuração ---
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { apiKey: "YOUR_API_KEY", authDomain: "YOUR_AUTH_DOMAIN", projectId: "YOUR_PROJECT_ID" };
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-arena-shooter';
+
+        // --- Inicialização do Firebase ---
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        // --- Elementos do DOM ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const gameIdEl = document.getElementById('gameId');
+        const playerListEl = document.getElementById('player-list');
+        const healthBarEl = document.getElementById('health-bar');
+        const messageOverlay = document.getElementById('message-overlay');
+        const messageText = document.getElementById('message-text');
+        const respawnTimerText = document.getElementById('respawn-timer');
+        const shareableLinkEl = document.getElementById('shareableLink');
+
+        // --- Configurações do Jogo ---
+        const PLAYER_SIZE = 20;
+        const PLAYER_SPEED = 3;
+        const PLAYER_HEALTH = 100;
+        const BULLET_SIZE = 5;
+        const BULLET_SPEED = 8;
+        const BULLET_DAMAGE = 10;
+        const RESPAWN_TIME = 3000; // 3 segundos
+
+        // --- Estado do Jogo ---
+        let gameId = null;
+        let localPlayerId = null;
+        let localPlayer = {};
+        let players = {};
+        let bullets = [];
+        let mapObstacles = [];
+        let unsubscribeGame;
+
+        const keys = { w: false, a: false, s: false, d: false };
+        const mouse = { x: 0, y: 0 };
+
+        // --- Funções de Inicialização ---
+
+        async function initGame() {
+            await signInAnonymously(auth);
+            onAuthStateChanged(auth, user => {
+                if (user) {
+                    localPlayerId = user.uid;
+                    handleGameSession();
+                }
+            });
+
+            setupCanvas();
+            setupInputListeners();
+            generateMap();
+            gameLoop();
+        }
+
+        function handleGameSession() {
+            const urlParams = new URLSearchParams(window.location.search);
+            gameId = urlParams.get('gameId');
+
+            if (gameId) {
+                gameIdEl.textContent = gameId;
+                shareableLinkEl.value = window.location.href;
+                joinGame(gameId);
+            } else {
+                createNewGame();
+            }
+        }
+
+        async function createNewGame() {
+            gameId = generateId(6);
+            const baseUrl = window.location.href.split('?')[0];
+            const newUrl = `${baseUrl}?gameId=${gameId}`;
+            shareableLinkEl.value = newUrl;
+            gameIdEl.textContent = gameId;
+            await initializePlayerInDb();
+            listenToGameUpdates();
+        }
+
+        async function joinGame(existingGameId) {
+            const gameRef = doc(db, `artifacts/${appId}/public/data/games/${existingGameId}`);
+            const gameSnap = await getDoc(gameRef);
+            if (gameSnap.exists()) {
+                await initializePlayerInDb();
+                listenToGameUpdates();
+            } else {
+                // Jogo não encontrado, redireciona para criar um novo.
+                window.location.href = window.location.pathname;
+            }
+        }
+
+        async function initializePlayerInDb() {
+            if (!localPlayerId || !gameId) return;
+            const spawnPoint = getRandomSpawnPoint();
+            const playerRef = doc(db, `artifacts/${appId}/public/data/games/${gameId}/players/${localPlayerId}`);
+            localPlayer = {
+                id: localPlayerId,
+                x: spawnPoint.x,
+                y: spawnPoint.y,
+                angle: 0,
+                health: PLAYER_HEALTH,
+                color: getRandomColor(),
+                isDead: false,
+                lastUpdate: serverTimestamp()
+            };
+            await setDoc(playerRef, localPlayer);
+        }
+
+        function listenToGameUpdates() {
+            if (unsubscribeGame) unsubscribeGame();
+            const playersCollectionRef = collection(db, `artifacts/${appId}/public/data/games/${gameId}/players`);
+            unsubscribeGame = onSnapshot(playersCollectionRef, (snapshot) => {
+                const updatedPlayers = {};
+                snapshot.forEach(doc => {
+                    updatedPlayers[doc.id] = doc.data();
+                });
+                players = updatedPlayers;
+
+                // Atualizar o jogador local com os dados do servidor
+                if (players[localPlayerId]) {
+                    // Evitar sobrescrever a posição local instantaneamente para não causar "teleportes"
+                    const serverPlayer = players[localPlayerId];
+                    localPlayer.health = serverPlayer.health;
+                    localPlayer.isDead = serverPlayer.isDead;
+                    if (localPlayer.isDead && !localPlayer.respawnTimer) {
+                        startRespawnTimer();
+                    }
+                } else {
+                    // O jogador foi removido ou ainda não apareceu, reinicializar.
+                    initializePlayerInDb();
+                }
+
+                updatePlayerList();
+                updateHealthBar();
+            });
+        }
+
+        // --- Lógica do Jogo ---
+
+        function update() {
+            if (!localPlayerId || !players[localPlayerId] || localPlayer.isDead) return;
+
+            handleMovement();
+            updateAngle();
+            updateBullets();
+            checkCollisions();
+
+            // Enviar atualizações para o Firestore em intervalos
+            if (Date.now() - (localPlayer.lastClientUpdate || 0) > 50) {
+                updatePlayerInDb();
+                localPlayer.lastClientUpdate = Date.now();
+            }
+        }
+
+        function handleMovement() {
+            let dx = 0;
+            let dy = 0;
+            if (keys.w) dy -= PLAYER_SPEED;
+            if (keys.s) dy += PLAYER_SPEED;
+            if (keys.a) dx -= PLAYER_SPEED;
+            if (keys.d) dx += PLAYER_SPEED;
+
+            if (dx !== 0 || dy !== 0) {
+                const nextX = localPlayer.x + dx;
+                const nextY = localPlayer.y + dy;
+                if (!checkWallCollision(nextX, nextY)) {
+                    localPlayer.x = nextX;
+                    localPlayer.y = nextY;
+                }
+            }
+        }
+
+        function updateAngle() {
+            localPlayer.angle = Math.atan2(mouse.y - canvas.height / 2, mouse.x - canvas.width / 2);
+        }
+
+        function shoot() {
+            if (!localPlayerId || localPlayer.isDead) return;
+
+            const bullet = {
+                ownerId: localPlayerId,
+                x: localPlayer.x,
+                y: localPlayer.y,
+                angle: localPlayer.angle,
+                speed: BULLET_SPEED,
+                size: BULLET_SIZE,
+                color: localPlayer.color || '#FFFFFF'
+            };
+            bullets.push(bullet);
+
+            // Para o multiplayer, enviamos um evento de tiro
+            const playerRef = doc(db, `artifacts/${appId}/public/data/games/${gameId}/players/${localPlayerId}`);
+            updateDoc(playerRef, { lastShotAngle: bullet.angle, lastShotTime: serverTimestamp() });
+        }
+
+        function updateBullets() {
+            // Atualiza balas locais
+            bullets.forEach((bullet, index) => {
+                bullet.x += Math.cos(bullet.angle) * bullet.speed;
+                bullet.y += Math.sin(bullet.angle) * bullet.speed;
+                if (bullet.x < 0 || bullet.x > canvas.width || bullet.y < 0 || bullet.y > canvas.height) {
+                    bullets.splice(index, 1);
+                }
+            });
+
+            // Renderiza balas de outros jogadores
+            Object.values(players).forEach(p => {
+                if (p.id !== localPlayerId && p.lastShotTime && p.lastShotTime.toDate) {
+                    const timeSinceShot = Date.now() - p.lastShotTime.toDate().getTime();
+                    // Simula a bala por um curto período
+                    if (timeSinceShot < 500) {
+                        let bulletX = p.x + Math.cos(p.lastShotAngle) * (timeSinceShot / 1000 * p.speed * 60); // aproximado
+                        let bulletY = p.y + Math.sin(p.lastShotAngle) * (timeSinceShot / 1000 * p.speed * 60);
+                        drawBullet({ x: bulletX, y: bulletY, color: p.color, size: BULLET_SIZE });
+                    }
+                }
+            });
+        }
+
+        function checkCollisions() {
+            // Colisão de balas com jogadores
+            bullets.forEach((bullet, bIndex) => {
+                Object.values(players).forEach(player => {
+                    if (bullet.ownerId !== player.id && !player.isDead) {
+                        const dist = Math.hypot(bullet.x - player.x, bullet.y - player.y);
+                        if (dist < PLAYER_SIZE) {
+                            bullets.splice(bIndex, 1);
+                            handlePlayerHit(player.id);
+                        }
+                    }
+                });
+            });
+        }
+
+        async function handlePlayerHit(playerId) {
+            const playerRef = doc(db, `artifacts/${appId}/public/data/games/${gameId}/players/${playerId}`);
+            const playerDoc = await getDoc(playerRef);
+            if (playerDoc.exists()) {
+                const currentHealth = playerDoc.data().health;
+                const newHealth = Math.max(0, currentHealth - BULLET_DAMAGE);
+
+                if (newHealth === 0) {
+                    await updateDoc(playerRef, { health: 0, isDead: true });
+                } else {
+                    await updateDoc(playerRef, { health: newHealth });
+                }
+            }
+        }
+
+        function startRespawnTimer() {
+            localPlayer.respawnTimer = setTimeout(() => {
+                respawnPlayer();
+                localPlayer.respawnTimer = null;
+            }, RESPAWN_TIME);
+
+            let timeLeft = RESPAWN_TIME / 1000;
+            messageOverlay.classList.remove('hidden');
+            messageText.textContent = "Você morreu!";
+            respawnTimerText.textContent = `Renascer em ${timeLeft}s...`;
+
+            const interval = setInterval(() => {
+                timeLeft--;
+                if (timeLeft > 0) {
+                    respawnTimerText.textContent = `Renascer em ${timeLeft}s...`;
+                } else {
+                    clearInterval(interval);
+                    messageOverlay.classList.add('hidden');
+                }
+            }, 1000);
+        }
+
+        async function respawnPlayer() {
+            const spawnPoint = getRandomSpawnPoint();
+            localPlayer.x = spawnPoint.x;
+            localPlayer.y = spawnPoint.y;
+            localPlayer.health = PLAYER_HEALTH;
+            localPlayer.isDead = false;
+
+            const playerRef = doc(db, `artifacts/${appId}/public/data/games/${gameId}/players/${localPlayerId}`);
+            await updateDoc(playerRef, {
+                x: localPlayer.x,
+                y: localPlayer.y,
+                health: PLAYER_HEALTH,
+                isDead: false
+            });
+        }
+
+
+        function checkWallCollision(x, y) {
+            for (const wall of mapObstacles) {
+                if (x > wall.x - PLAYER_SIZE && x < wall.x + wall.width + PLAYER_SIZE &&
+                    y > wall.y - PLAYER_SIZE && y < wall.y + wall.height + PLAYER_SIZE) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        async function updatePlayerInDb() {
+            const playerRef = doc(db, `artifacts/${appId}/public/data/games/${gameId}/players/${localPlayerId}`);
+            await updateDoc(playerRef, {
+                x: localPlayer.x,
+                y: localPlayer.y,
+                angle: localPlayer.angle,
+                lastUpdate: serverTimestamp()
+            });
+        }
+
+        // --- Funções de Renderização ---
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Centralizar a câmera no jogador local
+            ctx.save();
+            ctx.translate(canvas.width / 2 - localPlayer.x, canvas.height / 2 - localPlayer.y);
+
+            drawMap();
+
+            Object.values(players).forEach(player => {
+                if (!player.isDead) {
+                    drawPlayer(player);
+                }
+            });
+
+            bullets.forEach(drawBullet);
+
+            ctx.restore();
+        }
+
+        function drawPlayer(player) {
+            // Corpo
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, PLAYER_SIZE, 0, Math.PI * 2);
+            ctx.fillStyle = player.color || '#FFFFFF';
+            ctx.fill();
+
+            // Arma/Direção
+            ctx.save();
+            ctx.translate(player.x, player.y);
+            ctx.rotate(player.angle);
+            ctx.fillStyle = '#666';
+            ctx.fillRect(PLAYER_SIZE / 2, -5, PLAYER_SIZE, 10);
+            ctx.restore();
+        }
+
+        function drawBullet(bullet) {
+            ctx.beginPath();
+            ctx.arc(bullet.x, bullet.y, bullet.size, 0, Math.PI * 2);
+            ctx.fillStyle = bullet.color;
+            ctx.fill();
+        }
+
+        function generateMap() {
+            const w = 1600, h = 1200; // Tamanho do mapa
+            mapObstacles = [
+                // Bordas
+                { x: -100, y: -100, width: w + 200, height: 100 },
+                { x: -100, y: h, width: w + 200, height: 100 },
+                { x: -100, y: 0, width: 100, height: h },
+                { x: w, y: 0, width: 100, height: h },
+                // Obstáculos
+                { x: 300, y: 200, width: 100, height: 300 },
+                { x: 800, y: 600, width: 250, height: 80 },
+                { x: 1200, y: 150, width: 80, height: 400 },
+                { x: 200, y: 800, width: 400, height: 80 },
+            ];
+        }
+
+        function getRandomSpawnPoint() {
+            // Lógica simples de spawn, pode ser melhorada para evitar spawnar em paredes
+            return {
+                x: Math.random() * (1600 - 200) + 100,
+                y: Math.random() * (1200 - 200) + 100,
+            };
+        }
+
+        function drawMap() {
+            ctx.strokeStyle = "#555";
+            ctx.fillStyle = "#3c3c3c";
+            mapObstacles.forEach(wall => {
+                ctx.fillRect(wall.x, wall.y, wall.width, wall.height);
+                ctx.strokeRect(wall.x, wall.y, wall.width, wall.height);
+            });
+        }
+
+        // --- Loop Principal e Utilitários ---
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function setupCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            window.addEventListener('resize', () => {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            });
+        }
+
+        function setupInputListeners() {
+            window.addEventListener('keydown', e => {
+                if (e.key in keys) keys[e.key] = true;
+            });
+            window.addEventListener('keyup', e => {
+                if (e.key in keys) keys[e.key] = false;
+            });
+            canvas.addEventListener('mousemove', e => {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+            });
+            canvas.addEventListener('mousedown', (e) => {
+                if (e.button === 0) shoot();
+            });
+        }
+
+        function updatePlayerList() {
+            playerListEl.innerHTML = '';
+            Object.values(players).forEach(p => {
+                const li = document.createElement('li');
+                const healthStatus = p.isDead ? '(Morto)' : `(${p.health} HP)`;
+                li.textContent = `Jogador ${p.id.substring(0, 4)} ${healthStatus}`;
+                li.style.color = p.color;
+                playerListEl.appendChild(li);
+            });
+        }
+
+        function updateHealthBar() {
+            if (localPlayer) {
+                const healthPercentage = (localPlayer.health / PLAYER_HEALTH) * 100;
+                healthBarEl.style.width = `${healthPercentage}%`;
+                if (healthPercentage < 30) {
+                    healthBarEl.style.backgroundColor = '#ef4444'; // red-500
+                } else if (healthPercentage < 60) {
+                    healthBarEl.style.backgroundColor = '#f59e0b'; // amber-500
+                } else {
+                    healthBarEl.style.backgroundColor = '#22c55e'; // green-500
+                }
+            }
+        }
+
+        function generateId(length) {
+            let result = '';
+            const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+            for (let i = 0; i < length; i++) {
+                result += characters.charAt(Math.floor(Math.random() * characters.length));
+            }
+            return result;
+        }
+
+        function getRandomColor() {
+            const letters = '0123456789ABCDEF';
+            let color = '#';
+            for (let i = 0; i < 6; i++) {
+                color += letters[Math.floor(Math.random() * 16)];
+            }
+            return color;
+        }
+
+        // --- Iniciar o jogo ---
+        initGame();
+
+    </script>
+</body>
+
+</html>
