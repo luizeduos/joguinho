@@ -131,7 +131,36 @@
         import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, deleteDoc, serverTimestamp, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Variáveis de Configuração ---
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { apiKey: "AIzaSyAue8ffJlLokrLuEwWM9gH27LZy7NHcf9w", authDomain: "joguinhofatec.firebaseapp.com", projectId: "joguinhofatec" };
+        // IMPORTANTE: Para que o jogo funcione, você precisa criar seu próprio projeto no Firebase
+        // e colar suas chaves de configuração aqui.
+        // 1. Acesse https://firebase.google.com/ e crie um projeto.
+        // 2. No seu projeto, vá em "Project Settings" e em "General", desça até "Your apps".
+        // 3. Clique no ícone da web (</>) para adicionar um "Aplicativo da Web".
+        // 4. Copie o objeto 'firebaseConfig' que o Firebase fornecer.
+        // 5. Cole o objeto dentro de 'firebaseConfigFromUser' abaixo, substituindo as linhas de exemplo.
+        // 6. No console do Firebase, vá para "Authentication" (no menu à esquerda) -> "Sign-in method" e HABILITE "Anonymous".
+        // 7. No console do Firebase, vá para "Firestore Database" -> "Rules" e cole as seguintes regras e clique em "Publish":
+        /*
+        rules_version = '2';
+        service cloud.firestore {
+          match /databases/{database}/documents {
+            match /artifacts/{appId}/public/data/games/{gameId}/{document=**} {
+              allow read, write: if true; // Regra aberta para o jogo funcionar. CUIDADO em produção real.
+            }
+          }
+        }
+        */
+
+        const firebaseConfigFromUser = {
+            apiKey: "AIzaSyAue8ffJlLokrLuEwWM9gH27LZy7NHcf9w",
+            authDomain: "joguinhofatec.firebaseapp.com",
+            projectId: "joguinhofatec",
+            storageBucket: "joguinhofatec.firebasestorage.app",
+            messagingSenderId: "399357009393",
+            appId: "1:399357009393:web:90db79a3c8e7694f697850"
+        };
+
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : firebaseConfigFromUser;
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-arena-shooter';
 
         // --- Inicialização do Firebase ---
@@ -174,13 +203,23 @@
         // --- Funções de Inicialização ---
 
         async function initGame() {
-            await signInAnonymously(auth);
-            onAuthStateChanged(auth, user => {
-                if (user) {
-                    localPlayerId = user.uid;
-                    handleGameSession();
+            try {
+                await signInAnonymously(auth);
+                onAuthStateChanged(auth, user => {
+                    if (user) {
+                        localPlayerId = user.uid;
+                        handleGameSession();
+                    }
+                });
+            } catch (error) {
+                console.error("Erro na autenticação anônima:", error);
+                if (firebaseConfig.apiKey === undefined || firebaseConfig.apiKey === "") {
+                    alert("ERRO: A configuração do Firebase parece estar faltando. Siga as instruções no código para adicionar suas chaves do Firebase.");
+                } else {
+                    alert("Erro ao conectar com o Firebase. Verifique se a autenticação anônima está habilitada no seu projeto Firebase.");
                 }
-            });
+                return;
+            }
 
             setupCanvas();
             setupInputListeners();
